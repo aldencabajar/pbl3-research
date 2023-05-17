@@ -447,22 +447,50 @@ write.csv(tbl1_mat_local, file = "result/table_1_local.csv")
 ## Logistic Regression
 
 ```{r}
-for_mdl <- overall %>% 
+for_mdl <- overall %>%
   mutate(
-    burnout2 = if_else(localprofile == "Burnout", 1, 0), 
-    burnout = if_else(profile == "Burnout", 1, 0)
+    burnout2 = if_else(localprofile == "Burnout", 1, 0),
+    burnout = if_else(profile == "Burnout", 1, 0),
     # imputation
+    audit_c_total_score = if_else(
+      is.na(audit_c_total_score),
+      mean(audit_c_total_score, na.rm = TRUE),
+      audit_c_total_score
+    ),
+    weekly_leisure_time_activity_score = if_else(
+      is.na(weekly_leisure_time_activity_score),
+      mean(weekly_leisure_time_activity_score, na.rm = TRUE),
+      weekly_leisure_time_activity_score
+    ),
+    Global_PSQI_Score = if_else(
+      is.na(Global_PSQI_Score),
+      mean(Global_PSQI_Score, na.rm = TRUE),
+     Global_PSQI_Score 
+    )
   )
 
 
 mdl1 <-
   glm(
-    burnout2 ~ Age + Gender + `Year Level` + 
-      audit_c_total_score + weekly_leisure_time_activity_score + Global_PSQI_Score,
+    burnout2 ~ Age + Gender + `Year Level` + `Current Area of Residence` +
+      audit_c_total_score + weekly_leisure_time_activity_score +
+      Global_PSQI_Score + `Currently has a medical scholarship` + 
+      `Self-prescribed Sleep Medication` + `Distance of Residence from School`,
     data = for_mdl,
     family = binomial()
   )
-broom::tidy(mdl1)
+mdlresults <- 
+tidy(mdl1) %>%
+  group_by(term) %>%
+  mutate(odds_ratio = exp(estimate)) %>%
+  bind_cols(confint(mdl1) %>% exp %>% as_tibble) %>%
+  filter(term != "(Intercept)") %>%
+  select(term, odds_ratio, `2.5 %`, `97.5 %`, p.value)
 
+mdlresults
+```
+
+```{r}
+fwrite(mdlresults, "result/mdl_results.csv")
 ```
 
