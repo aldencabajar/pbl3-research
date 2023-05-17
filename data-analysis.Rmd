@@ -1,0 +1,468 @@
+---
+title: "Medical Students' Burnout and its Associated Factors"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    toc_depth: 3
+---
+<style>
+div.main-container {
+  max-width: 1750px;
+}
+
+.main-container {
+  margin-left: 10%;
+  margin-right: 10%;
+}
+
+.tocify-extend-page {
+   height: 250px;
+}
+
+</style>
+
+
+```{r include=FALSE}
+library(glue)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(skimr)
+library(tableone)
+library(stringr)
+library(knitr)
+library(tidyr)
+library(purrr)
+library(broom)
+library(readr)
+library(stringr)
+library(lubridate)
+showMessage <- FALSE
+showWarning <- TRUE
+set_alias(w = "fig.width", h = "fig.height", res = "results")
+opts_chunk$set(comment = "", error= TRUE, warning = showWarning, message = showMessage,
+               tidy = FALSE, cache = F, echo = T,
+               fig.width = 10, fig.height = 10)
+```
+
+
+## Data Pre-processing
+
+### demographics
+
+```{r}
+sheet_id <- "1RWToUiAlQdID6X4CUhPZRZxx9agvf0ZSIzIAPx__0vM"
+gid <- "1551959566"
+url <- glue("https://docs.google.com/spreadsheets/d/{sheet_id}/export?{gid}=0&format=csv")
+
+# remove columns, rows
+data <- fread(url, drop=c(2,58))
+data <- data[4:nrow(data),]
+
+
+convert_nastring_to_na <- function(str) {
+  if_else(str_to_lower(str_trim(str)) %in% c("n/a", "na", ""), NA_character_, str_trim(str_to_lower(str)))
+}
+
+data[,id:=1:nrow(data)]
+setcolorder(data, c("id", setdiff(names(data), "id")))
+
+demographics <- data[,c(1:15)]
+
+
+new_column_names <- c(
+  "Year Level",
+  "Current Area of Residence",
+  "Distance of Residence from School",
+  "Pre-medical Course",
+  "Currently has a medical scholarship",
+  "Smoker",
+  "Smoking_number_of_years",
+  "Smoking_number_of_packs_or_sticks_per_day",
+  "Self-prescribed Sleep Medication",
+  "Medications for Concentration/focus",
+  "Type_of_prescription"
+)
+setnames(demographics, 5:15, new_column_names)
+demographics[,c(5:15) := lapply(.SD, convert_nastring_to_na), .SDcols = 5:15]
+demographics[,Age:=as.integer(Age)]
+demographics[,`Current Area of Residence` := fcase(
+  str_detect(`Current Area of Residence`, "apartment"), "Dormitory/Apartment/Condominium",
+  str_detect(`Current Area of Residence`, "condo"), "Dormitory/Apartment/Condominium",
+  str_detect(`Current Area of Residence`, "dormitory"), "Dormitory/Apartment/Condominium",
+  str_detect(`Current Area of Residence`, "relatives|home"), "Home"
+)]
+demographics[,`Pre-medical Course` := fcase(
+  str_detect(`Pre-medical Course`, "physical therapy"), "BS PT",
+  str_detect(`Pre-medical Course`, "occupational therapy"), "BS OT",
+  str_detect(`Pre-medical Course`, "biology"), "BS Biology",
+  str_detect(`Pre-medical Course`, "nursing"), "BS Nursing",
+  str_detect(`Pre-medical Course`, "nutrition"), "BS Nutrition",
+  str_detect(`Pre-medical Course`, "pharmacy"), "BS Pharmacy",
+  str_detect(`Pre-medical Course`, "medtech"), "BS Medtech",
+  default = "Others"
+)]
+
+skim(demographics)
+
+```
+
+
+### Maslach's Burnout Inventory
+
+```{r}
+burnout <- data[,c(1,16:30)]
+
+burnout <- 
+  burnout %>% 
+    mutate(across(.cols=2:ncol(burnout), str_to_lower)) %>% 
+    mutate(
+      across(
+        .cols=2:ncol(burnout), ~case_when(
+            . == "never" ~ 0L,
+            . == "a few times per year" ~ 1L,
+            . == "once a month" ~ 2L,
+            . == "a few times per month" ~ 3L,
+            . == "once a week" ~ 4L,
+            . == "a few times per week" ~ 5L,
+            . == "everyday" ~ 6L,
+            TRUE ~ NA_integer_
+        )
+      )
+  )
+
+burnout_agg <- 
+burnout %>% 
+  group_by(id) %>% 
+  summarise(
+    exhaustion = mean(c_across(2:6), na.rm=TRUE),
+    deperson = mean(c_across(7:10), na.rm=TRUE),
+    effic = mean(c_across(11:16), na.rm=TRUE),
+  ) %>% 
+  mutate(
+    profile = case_when(
+      (exhaustion <= 2.9) & (deperson <= 2.86) & (effic > 4.3) ~ "Engaged",
+      (exhaustion <= 2.9) & (deperson <= 2.86) & (effic <= 4.3) ~ "Ineffective",
+      (exhaustion > 2.9) & (deperson <= 2.86)  ~ "Overextended",
+      (exhaustion <= 2.9) & (deperson > 2.86)  ~ "Disengaged",
+      (exhaustion > 2.9) & (deperson >= 2.86)  ~ "Burnout"
+    ) 
+  )
+burnout_agg <- burnout_agg %>% 
+  mutate(
+    high_exhaustion = mean(exhaustion) + sd(exhaustion) * 0.5,
+    high_deperson = mean(deperson) + sd(deperson) * 1.25,
+    high_effic = mean(effic) + sd(effic) * 0.10
+  )
+
+burnout_agg <- burnout_agg %>%
+  mutate(
+    localprofile = case_when((exhaustion <= high_exhaustion) &
+                               (deperson <= high_deperson) &
+                               (effic > high_effic) ~ "Engaged",
+                             (exhaustion <= high_exhaustion) &
+                               (deperson <= high_deperson) &
+                               (effic <= high_effic) ~ "Ineffective",
+                             (exhaustion > high_exhaustion) &
+                               (deperson <= high_deperson)  ~ "Overextended",
+                             (exhaustion <= high_exhaustion) &
+                               (deperson > high_deperson)  ~ "Disengaged",
+                             (exhaustion > high_exhaustion) &
+                               (deperson >= high_deperson)  ~ "Burnout"
+    )
+  )
+
+skim(burnout)
+skim(burnout_agg)
+```
+
+### Pittsburgh Sleep Quality Index
+```{r}
+gid <- "7616340"
+url <- glue("https://docs.google.com/spreadsheets/d/{sheet_id}/export?gid={gid}&format=csv")
+psqi <- fread(url, drop = c(1:5, 10, 53:54))
+psqi <- psqi[4:(nrow(psqi)-3)]
+
+# drop columns starting with `COMPONENT`
+columns_to_drop <- unique(c(str_subset(colnames(psqi), "^COMPONENT")))
+psqi[,id := 1:nrow(psqi)]
+psqi[, c(columns_to_drop) := NULL]
+
+# normalize these columns
+cols_to_normalize <- str_subset(colnames(psqi), "^([5-9]|10)[a-z]*\\.")
+q_cols <- str_subset(colnames(psqi), "^([1-9]|10)[a-z]*\\.")
+q_num <- map_chr(q_cols, ~str_extract(., "^(10|[1-9])[a-z]*"))
+cols_mapping <- map(q_cols, ~.)
+names(cols_mapping) <- q_num
+cols_mapping$`4` <- "HOURS OF SLEEP"
+
+
+ref_point <- parse_date_time("12:00", "%H:%M")
+psqi[,c(cols_to_normalize) := lapply(.SD, str_to_lower), .SDcols=cols_to_normalize]
+psqi[,c(cols_mapping$`1`) := parse_date_time(psqi[[cols_mapping$`1`]], "%H:%M")]
+psqi[,c(cols_mapping$`1`) := fifelse(
+  ref_point < psqi[[cols_mapping$`1`]],
+  psqi[[cols_mapping$`1`]] - ddays(),
+  psqi[[cols_mapping$`1`]]
+)]
+psqi[,c(cols_mapping$`3`) := parse_date_time(psqi[[cols_mapping$`3`]], "%H:%M")]
+psqi[,c(cols_mapping$`4`) := dhours(psqi[[cols_mapping$`4`]])]
+
+# Component 1
+psqi[,Component_1 := fcase(
+  psqi[[cols_mapping$`9`]] == "very good", 0L, 
+  psqi[[cols_mapping$`9`]] == "fairly good", 1L, 
+  psqi[[cols_mapping$`9`]] == "fairly bad", 2L, 
+  psqi[[cols_mapping$`9`]] == "very bad", 3L 
+)]
+
+# Component 2
+psqi[,Q2_subscore := fcase(
+  psqi[[cols_mapping$`2`]] <= 15, 0L, 
+  between(psqi[[cols_mapping$`2`]], 16, 30) , 1L, 
+  between(psqi[[cols_mapping$`2`]], 31, 60) , 2L, 
+  psqi[[cols_mapping$`2`]] > 60, 3L 
+)]
+
+psqi[,Q5a_subscore := fcase(
+   psqi[[cols_mapping$`5a`]] == "not during the past month", 0L,
+    psqi[[cols_mapping$`5a`]] == "less than once a week", 1L,
+    psqi[[cols_mapping$`5a`]] == "once or twice a week", 2L,
+    psqi[[cols_mapping$`5a`]] == "three or more times a week", 3L
+)]
+
+psqi[,Component_2_raw := Q2_subscore + Q5a_subscore]
+psqi[,Component_2 := fcase(
+  Component_2_raw == 0, 0L,
+  between(Component_2_raw, 1, 2), 1L,
+  between(Component_2_raw, 3, 4), 2L,
+  between(Component_2_raw, 5, 6), 3L
+)]
+
+# Component 3
+psqi[,Component_3 := fcase(
+  psqi[[cols_mapping$`4`]] > dhours(7), 0L, 
+  (psqi[[cols_mapping$`4`]] >= dhours(6)) & (psqi[[cols_mapping$`4`]] <= dhours(7)) , 1L, 
+  (psqi[[cols_mapping$`4`]] >= dhours(5)) & (psqi[[cols_mapping$`4`]] < dhours(6)) , 2L, 
+  psqi[[cols_mapping$`4`]] < dhours(5), 3L 
+)]
+
+# Component 4
+psqi[,hours_in_bed := psqi[[cols_mapping$`3`]] - psqi[[cols_mapping$`1`]]]
+psqi[,sleep_efficiency := psqi[[cols_mapping$`4`]]/psqi$hours_in_bed * 100]
+psqi[,Component_4 := fcase(
+  sleep_efficiency > 85, 0L,
+  between(sleep_efficiency, 75, 84), 1L,
+  between(sleep_efficiency, 65, 74) , 2L,
+  sleep_efficiency < 65, 3L
+)]
+
+# Component 5
+component_5_cols <- unlist(cols_mapping[str_subset(names(cols_mapping), "^5[b-i]")])
+psqi[,c(component_5_cols) := lapply(
+  .SD, function(x) fcase(
+    x == "not during the past month", 0L,
+    x == "less than once a week", 1L,
+    x == "once or twice a week", 2L,
+    x == "three or more times a week", 3L
+)), .SDcols=component_5_cols]
+psqi[,Component_5_raw:=apply(.SD, 1, sum), .SDcols=component_5_cols]
+psqi[,Component_5:=fcase(
+  Component_5_raw == 0, 0L,
+  between(Component_5_raw, 1, 9), 1L,
+  between(Component_5_raw, 10, 18), 2L,
+  between(Component_5_raw, 19, 27), 3L
+)]
+psqi[,Component_5_raw:=NULL]
+
+# Component 6
+psqi[,Component_6 := fcase(
+   psqi[[cols_mapping$`6`]] == "not during the past month", 0L,
+    psqi[[cols_mapping$`6`]] == "less than once a week", 1L,
+    psqi[[cols_mapping$`6`]] == "once or twice a week", 2L,
+    psqi[[cols_mapping$`6`]] == "three or more times a week", 3L
+)]
+
+# Component 7
+psqi[,':=' (
+  Q7_subscore = fcase(
+   psqi[[cols_mapping$`7`]] == "not during the past month", 0L,
+    psqi[[cols_mapping$`7`]] == "less than once a week", 1L,
+    psqi[[cols_mapping$`7`]] == "once or twice a week", 2L,
+    psqi[[cols_mapping$`7`]] == "three or more times a week", 3L
+  ),
+  Q8_subscore = fcase(
+   psqi[[cols_mapping$`8`]] == "no problem at all", 0L,
+    psqi[[cols_mapping$`8`]] == "only a very slight problem", 1L,
+    psqi[[cols_mapping$`8`]] == "somewhat of a problem", 2L,
+    psqi[[cols_mapping$`8`]] == "a very big problem", 2L
+  )
+)]
+
+psqi[,Component_7_raw := Q7_subscore + Q8_subscore]
+psqi[,Component_7 := fcase(
+  Component_7_raw == 0, 0L,
+  between(Component_7_raw, 1, 2), 1L,
+  between(Component_7_raw, 3, 4), 2L,
+  between(Component_7_raw, 5, 6), 3L
+)]
+psqi[,':='(Q7_subscore = NULL, Q8_subscore = NULL, Component_7_raw = NULL)]
+
+
+component_cols <- str_subset(colnames(psqi), "^Component_[1-7]$")
+psqi[,Global_PSQI_Score := apply(.SD, 1, sum), .SDcols=component_cols]
+
+psqi <- psqi[,c("id", component_cols, "Global_PSQI_Score"), with=FALSE]
+skim(psqi)
+
+
+```
+
+### Godin Leisure Time Exercise
+
+```{r}
+gid <- "935168508"
+url <- glue("https://docs.google.com/spreadsheets/d/{sheet_id}/export?gid={gid}&format=csv")
+cols <- c("WEEKLY LEISURE TIME ACTIVITY SCORE", "GODIN SCALE SCORE")
+godin <- fread(url)[,c("WEEKLY LEISURE TIME ACTIVITY SCORE", "GODIN SCALE SCORE"), with=FALSE]
+godin <- godin[4:(nrow(godin)-4)]
+setnames(godin, cols, c("weekly_leisure_time_activity_score", "godin_scale_score"))
+godin[,weekly_leisure_time_activity_score := as.integer(weekly_leisure_time_activity_score)]
+godin[,godin_scale_score := str_to_lower(godin_scale_score)]
+godin[godin_scale_score == "#value!", godin_scale_score := NA_character_]
+godin[,id:=1:nrow(godin)]
+skim(godin)
+
+```
+
+### Audit Score
+
+```{r}
+gid <- "1868960401"
+url <- glue("https://docs.google.com/spreadsheets/d/{sheet_id}/export?gid={gid}&format=csv")
+cols <-
+  c(
+    "1. How often do you have a drink containing alcohol?",
+    "3. How often do you have 6 or more drinks on one occasion?",
+    "#1 SCORE",
+    "#2 SCORE",
+    "#3 SCORE",
+    "TOTAL SCORE",
+    "INTERPRETATION")
+new_cols <- c(
+  "Alcohol use frequency",
+  "Binge drinking (>6 drinks) in last 1 year?",
+  "score_1",
+  "score_2",
+  "score_3",
+  "audit_c_total_score",
+  "audit_c_class"
+)
+audit <- fread(url)[,cols, with=FALSE]
+audit <- audit[4:(nrow(audit)-3)]
+setnames(audit, cols, new_cols)
+score_cols <- c("score_1", "score_2", "score_3", "audit_c_total_score")
+audit[, c(score_cols):= lapply(.SD, as.integer), .SDcols=score_cols]
+audit[,audit_c_class := str_to_lower(audit_c_class)]
+audit[,id := 1:nrow(audit)]
+skim(audit)
+
+
+```
+
+
+## Table 1
+
+```{r}
+dfs <- list(demographics, burnout_agg, psqi, godin, audit)
+select_cols <- c(
+  "Age",
+  "Year Level",
+  "Gender",
+  "Current Area of Residence",
+  "Distance of Residence from School",
+  "Pre-medical Course",
+  "Currently has a medical scholarship",
+  "Smoker",
+  "Self-prescribed Sleep Medication",
+  "Medications for Concentration/focus",
+  "audit_c_class",
+  "Global_PSQI_Score",
+  "godin_scale_score",
+  "profile",
+  "localprofile",
+  "audit_c_total_score",
+  "weekly_leisure_time_activity_score"
+)
+overall <- reduce(dfs, left_join, by="id", .dir="forward")[,select_cols, with=F]
+skim(overall)
+```
+
+### Maslach's Cut-off
+
+```{r}
+exclude_cols <-
+  c(
+    "profile",
+    "localprofile",
+    "audit_c_total_score",
+    "weekly_leisure_time_activity_score"
+  )
+tbl1 <-
+  CreateTableOne(
+    vars = select_cols[!(select_cols %in% exclude_cols)],
+    data = overall,
+    includeNA = TRUE,
+    strata = "profile",
+    addOverall = TRUE
+  )
+print(tbl1, showAllLevels = TRUE)
+
+```
+```{r}
+tbl1_mat <- print(tbl1, noSpaces = TRUE, quote = FALSE, printToggle = FALSE, showAllLevels = TRUE)
+write.csv(tbl1_mat, file = "result/table_1.csv")
+```
+
+### Local Context Cut-off
+
+```{r}
+tbl1_local <-
+  CreateTableOne(
+    vars = select_cols[!(select_cols %in% exclude_cols)],
+    data = overall,
+    includeNA = TRUE,
+    strata = "localprofile",
+    addOverall = TRUE
+  )
+print(tbl1_local, showAllLevels = TRUE)
+```
+
+```{r}
+tbl1_mat_local <- print(tbl1_local, noSpaces = TRUE, quote = FALSE, printToggle = FALSE, showAllLevels = TRUE)
+write.csv(tbl1_mat_local, file = "result/table_1_local.csv")
+```
+
+## Logistic Regression
+
+```{r}
+for_mdl <- overall %>% 
+  mutate(
+    burnout2 = if_else(localprofile == "Burnout", 1, 0), 
+    burnout = if_else(profile == "Burnout", 1, 0)
+    # imputation
+  )
+
+
+mdl1 <-
+  glm(
+    burnout2 ~ Age + Gender + `Year Level` + 
+      audit_c_total_score + weekly_leisure_time_activity_score + Global_PSQI_Score,
+    data = for_mdl,
+    family = binomial()
+  )
+broom::tidy(mdl1)
+
+```
+
