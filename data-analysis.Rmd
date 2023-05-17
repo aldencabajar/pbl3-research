@@ -469,7 +469,10 @@ for_mdl <- overall %>%
     )
   )
 
+skim(for_mdl)
+```
 
+```{r}
 mdl1 <-
   glm(
     burnout2 ~ Age + Gender + `Year Level` + `Current Area of Residence` +
